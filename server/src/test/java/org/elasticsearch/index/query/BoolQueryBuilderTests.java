@@ -24,9 +24,9 @@ import org.apache.lucene.search.BooleanQuery;
 import org.apache.lucene.search.MatchAllDocsQuery;
 import org.apache.lucene.search.MatchNoDocsQuery;
 import org.apache.lucene.search.Query;
-import org.elasticsearch.common.ParsingException;
 import org.elasticsearch.common.xcontent.XContentBuilder;
 import org.elasticsearch.common.xcontent.XContentFactory;
+import org.elasticsearch.common.xcontent.XContentParseException;
 import org.elasticsearch.common.xcontent.XContentParser;
 import org.elasticsearch.common.xcontent.XContentType;
 import org.elasticsearch.test.AbstractQueryTestCase;
@@ -41,6 +41,7 @@ import java.util.Map;
 
 import static org.elasticsearch.index.query.QueryBuilders.boolQuery;
 import static org.elasticsearch.index.query.QueryBuilders.termQuery;
+import static org.hamcrest.CoreMatchers.containsString;
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.instanceOf;
 
@@ -136,7 +137,7 @@ public class BoolQueryBuilderTests extends AbstractQueryTestCase<BoolQueryBuilde
         }
         if (tempQueryBuilder.mustNot().size() > 0) {
             QueryBuilder mustNot = tempQueryBuilder.mustNot().get(0);
-            contentString += (randomBoolean() ? "\"must_not\": " : "\"mustNot\": ") + mustNot.toString() + ",";
+            contentString += "\"must_not\":" + mustNot.toString() + ",";
             expectedQuery.mustNot(mustNot);
         }
         if (tempQueryBuilder.should().size() > 0) {
@@ -196,15 +197,15 @@ public class BoolQueryBuilderTests extends AbstractQueryTestCase<BoolQueryBuilde
     public void testMinShouldMatchBiggerThanNumberOfShouldClauses() throws Exception {
         BooleanQuery bq = (BooleanQuery) parseQuery(
             boolQuery()
-                .should(termQuery(STRING_FIELD_NAME, "bar"))
-                .should(termQuery(STRING_FIELD_NAME_2, "bar2"))
+                .should(termQuery(TEXT_FIELD_NAME, "bar"))
+                .should(termQuery(KEYWORD_FIELD_NAME, "bar2"))
                 .minimumShouldMatch("3")).toQuery(createShardContext());
         assertEquals(3, bq.getMinimumNumberShouldMatch());
 
         bq = (BooleanQuery) parseQuery(
             boolQuery()
-                .should(termQuery(STRING_FIELD_NAME, "bar"))
-                .should(termQuery(STRING_FIELD_NAME_2, "bar2"))
+                .should(termQuery(TEXT_FIELD_NAME, "bar"))
+                .should(termQuery(KEYWORD_FIELD_NAME, "bar2"))
                 .minimumShouldMatch(3)).toQuery(createShardContext());
         assertEquals(3, bq.getMinimumNumberShouldMatch());
     }
@@ -212,8 +213,8 @@ public class BoolQueryBuilderTests extends AbstractQueryTestCase<BoolQueryBuilde
     public void testMinShouldMatchDisableCoord() throws Exception {
         BooleanQuery bq = (BooleanQuery) parseQuery(
                 boolQuery()
-                        .should(termQuery(STRING_FIELD_NAME, "bar"))
-                        .should(termQuery(STRING_FIELD_NAME, "bar2"))
+                        .should(termQuery(TEXT_FIELD_NAME, "bar"))
+                        .should(termQuery(TEXT_FIELD_NAME, "bar2"))
                         .minimumShouldMatch("3")).toQuery(createShardContext());
         assertEquals(3, bq.getMinimumNumberShouldMatch());
     }
@@ -277,14 +278,31 @@ public class BoolQueryBuilderTests extends AbstractQueryTestCase<BoolQueryBuilde
         assertEquals(query, "kimchy", ((TermQueryBuilder)queryBuilder.must().get(0)).value());
     }
 
+    public void testMinimumShouldMatchNumber() throws IOException {
+        String query = "{\"bool\" : {\"must\" : { \"term\" : { \"field\" : \"value\" } }, \"minimum_should_match\" : 1 } }";
+        BoolQueryBuilder builder = (BoolQueryBuilder) parseQuery(query);
+        assertEquals("1", builder.minimumShouldMatch());
+    }
+
     /**
      * test that unknown query names in the clauses throw an error
      */
     public void testUnknownQueryName() throws IOException {
         String query = "{\"bool\" : {\"must\" : { \"unknown_query\" : { } } } }";
 
-        ParsingException ex = expectThrows(ParsingException.class, () -> parseQuery(query));
-        assertEquals("unknown query [unknown_query]", ex.getMessage());
+        XContentParseException ex = expectThrows(XContentParseException.class, () -> parseQuery(query));
+        assertEquals("[1:41] [bool] failed to parse field [must]", ex.getMessage());
+        Throwable e = ex.getCause();
+        assertThat(e.getMessage(), containsString("unknown query [unknown_query]"));
+
+    }
+
+    public void testDeprecation() throws IOException {
+        String query = "{\"bool\" : {\"mustNot\" : { \"match_all\" : { } } } }";
+        QueryBuilder q = parseQuery(query);
+        QueryBuilder expected = new BoolQueryBuilder().mustNot(new MatchAllQueryBuilder());
+        assertEquals(expected, q);
+        assertWarnings("Deprecated field [mustNot] used, expected [must_not] instead");
     }
 
     public void testRewrite() throws IOException {
@@ -292,22 +310,22 @@ public class BoolQueryBuilderTests extends AbstractQueryTestCase<BoolQueryBuilde
         boolean mustRewrite = false;
         if (randomBoolean()) {
             mustRewrite = true;
-            boolQueryBuilder.must(new WrapperQueryBuilder(new TermsQueryBuilder(STRING_FIELD_NAME, "must").toString()));
+            boolQueryBuilder.must(new WrapperQueryBuilder(new TermsQueryBuilder(TEXT_FIELD_NAME, "must").toString()));
         }
         if (randomBoolean()) {
             mustRewrite = true;
-            boolQueryBuilder.should(new WrapperQueryBuilder(new TermsQueryBuilder(STRING_FIELD_NAME, "should").toString()));
+            boolQueryBuilder.should(new WrapperQueryBuilder(new TermsQueryBuilder(TEXT_FIELD_NAME, "should").toString()));
         }
         if (randomBoolean()) {
             mustRewrite = true;
-            boolQueryBuilder.filter(new WrapperQueryBuilder(new TermsQueryBuilder(STRING_FIELD_NAME, "filter").toString()));
+            boolQueryBuilder.filter(new WrapperQueryBuilder(new TermsQueryBuilder(TEXT_FIELD_NAME, "filter").toString()));
         }
         if (randomBoolean()) {
             mustRewrite = true;
-            boolQueryBuilder.mustNot(new WrapperQueryBuilder(new TermsQueryBuilder(STRING_FIELD_NAME, "must_not").toString()));
+            boolQueryBuilder.mustNot(new WrapperQueryBuilder(new TermsQueryBuilder(TEXT_FIELD_NAME, "must_not").toString()));
         }
         if (mustRewrite == false && randomBoolean()) {
-            boolQueryBuilder.must(new TermsQueryBuilder(STRING_FIELD_NAME, "no_rewrite"));
+            boolQueryBuilder.must(new TermsQueryBuilder(TEXT_FIELD_NAME, "no_rewrite"));
         }
         QueryBuilder rewritten = boolQueryBuilder.rewrite(createShardContext());
         if (mustRewrite == false && boolQueryBuilder.must().isEmpty()) {
@@ -318,16 +336,16 @@ public class BoolQueryBuilderTests extends AbstractQueryTestCase<BoolQueryBuilde
             if (mustRewrite) {
                 assertNotSame(rewrite, boolQueryBuilder);
                 if (boolQueryBuilder.must().isEmpty() == false) {
-                    assertEquals(new TermsQueryBuilder(STRING_FIELD_NAME, "must"), rewrite.must().get(0));
+                    assertEquals(new TermsQueryBuilder(TEXT_FIELD_NAME, "must"), rewrite.must().get(0));
                 }
                 if (boolQueryBuilder.should().isEmpty() == false) {
-                    assertEquals(new TermsQueryBuilder(STRING_FIELD_NAME, "should"), rewrite.should().get(0));
+                    assertEquals(new TermsQueryBuilder(TEXT_FIELD_NAME, "should"), rewrite.should().get(0));
                 }
                 if (boolQueryBuilder.mustNot().isEmpty() == false) {
-                    assertEquals(new TermsQueryBuilder(STRING_FIELD_NAME, "must_not"), rewrite.mustNot().get(0));
+                    assertEquals(new TermsQueryBuilder(TEXT_FIELD_NAME, "must_not"), rewrite.mustNot().get(0));
                 }
                 if (boolQueryBuilder.filter().isEmpty() == false) {
-                    assertEquals(new TermsQueryBuilder(STRING_FIELD_NAME, "filter"), rewrite.filter().get(0));
+                    assertEquals(new TermsQueryBuilder(TEXT_FIELD_NAME, "filter"), rewrite.filter().get(0));
                 }
             } else {
                 assertSame(rewrite, boolQueryBuilder);
@@ -360,14 +378,14 @@ public class BoolQueryBuilderTests extends AbstractQueryTestCase<BoolQueryBuilde
         assertEquals(new MatchNoneQueryBuilder(), rewritten);
 
         boolQueryBuilder = new BoolQueryBuilder();
-        boolQueryBuilder.must(new TermQueryBuilder(STRING_FIELD_NAME,"bar"));
+        boolQueryBuilder.must(new TermQueryBuilder(TEXT_FIELD_NAME,"bar"));
         boolQueryBuilder.filter(new WrapperQueryBuilder(new WrapperQueryBuilder(new MatchNoneQueryBuilder().toString()).toString()));
         rewritten = boolQueryBuilder.rewrite(createShardContext());
         assertEquals(new MatchNoneQueryBuilder(), rewritten);
 
         boolQueryBuilder = new BoolQueryBuilder();
-        boolQueryBuilder.must(new TermQueryBuilder(STRING_FIELD_NAME,"bar"));
-        boolQueryBuilder.filter(new BoolQueryBuilder().should(new TermQueryBuilder(STRING_FIELD_NAME,"bar"))
+        boolQueryBuilder.must(new TermQueryBuilder(TEXT_FIELD_NAME,"bar"));
+        boolQueryBuilder.filter(new BoolQueryBuilder().should(new TermQueryBuilder(TEXT_FIELD_NAME,"bar"))
             .filter(new MatchNoneQueryBuilder()));
         rewritten = Rewriteable.rewrite(boolQueryBuilder, createShardContext());
         assertEquals(new MatchNoneQueryBuilder(), rewritten);
@@ -378,7 +396,7 @@ public class BoolQueryBuilderTests extends AbstractQueryTestCase<BoolQueryBuilde
         assertEquals(new MatchNoneQueryBuilder(), rewritten);
 
         boolQueryBuilder = new BoolQueryBuilder();
-        boolQueryBuilder.should(new TermQueryBuilder(STRING_FIELD_NAME, "bar"));
+        boolQueryBuilder.should(new TermQueryBuilder(TEXT_FIELD_NAME, "bar"));
         boolQueryBuilder.should(new WrapperQueryBuilder(new MatchNoneQueryBuilder().toString()));
         rewritten = Rewriteable.rewrite(boolQueryBuilder, createShardContext());
         assertNotEquals(new MatchNoneQueryBuilder(), rewritten);
